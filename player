@@ -1,0 +1,482 @@
+package Activities;
+
+import Utils.ScreenResolution;
+import Utils.StringUtils;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
+import butterknife.BindView;
+import butterknife.ButterKnife;
+import butterknife.OnClick;
+
+import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.media.AudioManager;
+import android.media.MediaDrm;
+import android.net.Uri;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.util.Log;
+import android.util.Pair;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.RelativeLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.akexorcist.roundcornerprogressbar.IconRoundCornerProgressBar;
+import com.example.jlplayer.R;
+import com.google.android.exoplayer2.C;
+import com.google.android.exoplayer2.ExoPlayer;
+import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.Player;
+import com.google.android.exoplayer2.RenderersFactory;
+import com.google.android.exoplayer2.SimpleExoPlayer;
+import com.google.android.exoplayer2.audio.AudioAttributes;
+import com.google.android.exoplayer2.drm.DefaultDrmSessionManager;
+import com.google.android.exoplayer2.drm.DrmSessionManager;
+import com.google.android.exoplayer2.drm.ExoMediaCrypto;
+import com.google.android.exoplayer2.drm.FrameworkMediaDrm;
+import com.google.android.exoplayer2.drm.HttpMediaDrmCallback;
+import com.google.android.exoplayer2.drm.MediaDrmCallback;
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
+import com.google.android.exoplayer2.offline.DownloadHelper;
+import com.google.android.exoplayer2.offline.DownloadRequest;
+import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
+import com.google.android.exoplayer2.source.MediaSource;
+import com.google.android.exoplayer2.source.MergingMediaSource;
+import com.google.android.exoplayer2.source.ProgressiveMediaSource;
+import com.google.android.exoplayer2.source.SingleSampleMediaSource;
+import com.google.android.exoplayer2.source.dash.DashMediaSource;
+import com.google.android.exoplayer2.source.hls.HlsMediaSource;
+import com.google.android.exoplayer2.source.smoothstreaming.SsMediaSource;
+import com.google.android.exoplayer2.trackselection.AdaptiveTrackSelection;
+import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
+import com.google.android.exoplayer2.trackselection.RandomTrackSelection;
+import com.google.android.exoplayer2.trackselection.TrackSelection;
+import com.google.android.exoplayer2.ui.PlayerView;
+import com.google.android.exoplayer2.upstream.DataSource;
+import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
+import com.google.android.exoplayer2.upstream.HttpDataSource;
+import com.google.android.exoplayer2.util.Util;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.AdView;
+import com.google.android.gms.ads.MobileAds;
+import com.google.android.gms.ads.initialization.InitializationStatus;
+import com.google.android.gms.ads.initialization.OnInitializationCompleteListener;
+
+import org.apache.commons.io.FilenameUtils;
+
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+
+import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_DEFAULT;
+import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_EXTRA;
+import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_RANDOM;
+import static ExoPlayer.PlayerActivity.ACTION_VIEW;
+import static ExoPlayer.PlayerActivity.ACTION_VIEW_LIST;
+import static ExoPlayer.PlayerActivity.PREFER_EXTENSION_DECODERS_EXTRA;
+import static ExoPlayer.PlayerActivity.TUNNELING_EXTRA;
+
+
+public class VideoPlayerActivity extends AppCompatActivity {
+
+    @BindView(R.id.video_name) TextView VideoName;
+    @BindView(R.id.playerView) PlayerView playerView;
+    @BindView(R.id.exo_pause) ImageView showads;
+    @BindView(R.id.floating_widget) ImageView imageView;
+    @BindView(R.id.exoFullscreenIcon) ImageView fullScreen;
+    @BindView(R.id.volume_bright_container) LinearLayout VolumeBrightContainer;
+    @BindView(R.id.volume_bright_image) ImageView VolumeBrightImage;
+    @BindView(R.id.volume_bright_text) TextView VolumeBrightText;
+    @BindView(R.id.volume_slider_container) LinearLayout VolumeBarContainer;
+    @BindView(R.id.brightness_slider_container) LinearLayout BrightBarContainer;
+    @BindView(R.id.volume_progress_bar) IconRoundCornerProgressBar volumeBar;
+    @BindView(R.id.brightness_progress_bar) IconRoundCornerProgressBar brightBar;
+    @BindView(R.id.pausePlayContainer) LinearLayout pausePlayView;
+
+    Uri videoUri;
+
+    private SimpleExoPlayer player;
+    private PlaybackStateListener playbackStateListener;
+    private static final String TAG = VideoPlayerActivity.class.getName();
+    private boolean playWhenReady = true;
+    private int currentWindow = 0;
+    private long playbackPosition = 0;
+    GestureDetector mGestureDetector;
+    AudioManager audioManager;
+
+    static final int MAX_VOLUME = 100;
+    static final int MIN_VOLUME_BRIGHT = 0;
+    static final int MAX_LIGHTNESS = 255;
+    static final double SLIP_SENSITIVITY = 0.65;
+    final static int ADD_FLAG = 1;
+    final static int SUB_FLAG = -1;
+    private static final int MIN_SEEK_DISTANCE = 200;
+    private static final int MAX_SEEK_DISTANCE = 10000;
+
+    boolean fullscreen, mIntoSeek, mIsFastFinish = false;
+    int mScreenWidth = 0;
+    private long mSeek = 0;
+    int mMaxVolume, mShowVolume, mShowLightness;
+    //Minimum Video you want to buffer while Playing
+    public static final int MIN_BUFFER_DURATION = 10000;
+    public static final int MAX_BUFFER_DURATION = 20000;
+    public static final int MIN_PLAYBACK_START_BUFFER = 1000;
+    public static final int MIN_PLAYBACK_RESUME_BUFFER = 1000;
+
+    private MediaSource mediaSource;
+    private DefaultTrackSelector trackSelector;
+    private DefaultTrackSelector.Parameters trackSelectorParameters;
+    private DataSource.Factory dataSourceFactory;
+    private static final String KEY_TRACK_SELECTOR_PARAMETERS = "track_selector_parameters";
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_video_player);
+        ButterKnife.bind(this);
+        MobileAds.initialize(this, new OnInitializationCompleteListener() {
+            @Override
+            public void onInitializationComplete(InitializationStatus initializationStatus) {
+            }
+        });
+
+        DataSource.Factory dataSourceFactory = new DefaultDataSourceFactory(this, "exoplayer");
+        if (savedInstanceState != null) {
+            trackSelectorParameters = savedInstanceState.getParcelable(KEY_TRACK_SELECTOR_PARAMETERS);
+        } else {
+            DefaultTrackSelector.ParametersBuilder builder = new DefaultTrackSelector.ParametersBuilder(/* context= */ this);
+            trackSelectorParameters = builder.build();
+        }
+
+        try {
+            this.getSupportActionBar().hide();
+        } catch (NullPointerException e){
+            e.printStackTrace();
+        }
+
+        Intent intent = getIntent();
+        if (intent!=null){
+            String uri_str = intent.getStringExtra("videoUri");
+            videoUri = Uri.parse(uri_str);
+
+            String fileName = FilenameUtils.getBaseName(String.valueOf(videoUri));
+            String afterDecode = null;
+            try {
+                afterDecode = URLDecoder.decode(fileName, "UTF-8");
+            } catch (UnsupportedEncodingException e) {
+                e.printStackTrace();
+            }
+            VideoName.setText(afterDecode);
+        }
+        //volume brightness control
+        mGestureDetector = new GestureDetector(this, mSimpleOnGestureListener);
+        VolumeBright();
+        playerView.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(final View view, final MotionEvent event) {
+                if (mGestureDetector != null) {
+                    mGestureDetector.onTouchEvent(event);
+                }
+                if (event.getAction() == MotionEvent.ACTION_UP) {
+                    mIntoSeek = false;
+                    VolumeBrightContainer.setVisibility(View.GONE);
+                    VolumeBarContainer.setVisibility(View.GONE);
+                    BrightBarContainer.setVisibility(View.GONE);
+                    if (mIsFastFinish) {
+                        player.seekTo(mSeek);
+                        mIsFastFinish = false;
+                    }
+                }
+                return onTouchEvent(event);
+            }
+        });
+        playbackStateListener = new PlaybackStateListener();
+        //exoPlayerManager = new ExoPlayerManager(playerView);
+        //exoPlayerManager.play(Uri.parse(String.valueOf(videoUri)));
+    }
+
+
+    private void initializePlayer() {
+        if (player == null) {
+            Intent intent = getIntent();
+            mediaSource = createTopLevelMediaSource(intent);
+            if (mediaSource == null) {
+                return;
+            }
+
+            TrackSelection.Factory trackSelectionFactory;
+            String abrAlgorithm = intent.getStringExtra(ABR_ALGORITHM_EXTRA);
+            if (abrAlgorithm == null || ABR_ALGORITHM_DEFAULT.equals(abrAlgorithm)) {
+                trackSelectionFactory = new AdaptiveTrackSelection.Factory();
+            } else if (ABR_ALGORITHM_RANDOM.equals(abrAlgorithm)) {
+                trackSelectionFactory = new RandomTrackSelection.Factory();
+            } else {
+                //showToast(R.string.error_unrecognized_abr_algorithm);
+                finish();
+                return;
+            }
+
+            boolean preferExtensionDecoders = intent.getBooleanExtra(PREFER_EXTENSION_DECODERS_EXTRA, false);
+            RenderersFactory renderersFactory =  ((ExoApplication) getApplication()).buildRenderersFactory(preferExtensionDecoders);
+            trackSelector = new DefaultTrackSelector(/* context= */ this, trackSelectionFactory);
+            trackSelector.setParameters(trackSelectorParameters);
+            player = new SimpleExoPlayer.Builder(/* context= */ this, renderersFactory)
+                            .setTrackSelector(trackSelector)
+                            .build();
+            player.setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus= */ true);
+            playerView.setPlayer(player);
+            player.prepare(mediaSource, false, false);
+        }
+    }
+
+    @Nullable
+    private MediaSource createTopLevelMediaSource(Intent intent) {
+        String action = intent.getAction();
+        boolean actionIsListView = ACTION_VIEW_LIST.equals(action);
+        if (!actionIsListView && !ACTION_VIEW.equals(action)) {
+            //showToast(getString(R.string.unexpected_intent_action, action));
+            finish();
+            return null;
+        }
+        ExoSample intentAsSample = ExoSample.createFromIntent(intent);
+        ExoSample.UriSample[] samples = intentAsSample instanceof ExoSample.PlaylistSample ? ((ExoSample.PlaylistSample) intentAsSample).children : new ExoSample.UriSample[] {(ExoSample.UriSample) intentAsSample};
+        boolean seenAdsTagUri = false;
+        for (ExoSample.UriSample sample : samples) {
+            seenAdsTagUri |= sample.adTagUri != null;
+            if (!Util.checkCleartextTrafficPermitted(sample.uri)) {
+                //showToast(R.string.error_cleartext_not_permitted);
+                return null;
+            }
+            if (Util.maybeRequestReadExternalStoragePermission(/* activity= */ this, sample.uri)) {
+                // The player will be reinitialized if the permission is granted.
+                return null;
+            }
+        }
+        MediaSource[] mediaSources = new MediaSource[samples.length];
+        for (int i = 0; i < samples.length; i++) {
+            mediaSources[i] = createLeafMediaSource(samples[i]);
+            ExoSample.SubtitleInfo subtitleInfo = samples[i].subtitleInfo;
+            if (subtitleInfo != null) {
+                if (Util.maybeRequestReadExternalStoragePermission(/* activity= */ this, subtitleInfo.uri)) {
+                    return null;
+                }
+                Format subtitleFormat = Format.createTextSampleFormat(/* id= */ null, subtitleInfo.mimeType, C.SELECTION_FLAG_DEFAULT, subtitleInfo.language);
+                MediaSource subtitleMediaSource = new SingleSampleMediaSource.Factory(dataSourceFactory).createMediaSource(subtitleInfo.uri, subtitleFormat, C.TIME_UNSET);
+                mediaSources[i] = new MergingMediaSource(mediaSources[i], subtitleMediaSource);
+            }
+        }
+        MediaSource mediaSource = mediaSources.length == 1 ? mediaSources[0] : new ConcatenatingMediaSource(mediaSources);
+        return mediaSource;
+    }
+
+    private MediaSource createLeafMediaSource(ExoSample.UriSample parameters) {
+        ExoSample.DrmInfo drmInfo = parameters.drmInfo;
+        int errorStringId = R.string.error_drm_unknown;
+        DrmSessionManager<ExoMediaCrypto> drmSessionManager = null;
+        if (drmInfo == null) {
+            drmSessionManager = DrmSessionManager.getDummyDrmSessionManager();
+        } else if (Util.SDK_INT < 18) {
+            //errorStringId = R.string.error_drm_unsupported_before_api_18;
+        } else if (!MediaDrm.isCryptoSchemeSupported(drmInfo.drmScheme)) {
+            //errorStringId = R.string.error_drm_unsupported_scheme;
+        } else {
+            MediaDrmCallback mediaDrmCallback = createMediaDrmCallback(drmInfo.drmLicenseUrl, drmInfo.drmKeyRequestProperties);
+            drmSessionManager = new DefaultDrmSessionManager.Builder()
+                    .setUuidAndExoMediaDrmProvider(drmInfo.drmScheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
+                    .setMultiSession(drmInfo.drmMultiSession)
+                    .build(mediaDrmCallback);
+        }
+
+        if (drmSessionManager == null) {
+            //showToast(errorStringId);
+            finish();
+            return null;
+        }
+        DownloadRequest downloadRequest = ((ExoApplication) getApplication()).getDownloadTracker().getDownloadRequest(parameters.uri);
+        if (downloadRequest != null) {
+            return DownloadHelper.createMediaSource(downloadRequest, dataSourceFactory);
+        }
+        return createLeafMediaSource(parameters.uri, parameters.extension, drmSessionManager);
+    }
+    
+    private MediaSource createLeafMediaSource(Uri uri, String extension, DrmSessionManager<?> drmSessionManager) {
+        @C.ContentType int type = Util.inferContentType(uri, extension);
+        switch (type) {
+            case C.TYPE_DASH:
+                return new DashMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
+            case C.TYPE_SS:
+                return new SsMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
+            case C.TYPE_HLS:
+                return new HlsMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
+            case C.TYPE_OTHER:
+                return new ProgressiveMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
+            default:
+                throw new IllegalStateException("Unsupported type: " + type);
+        }
+    }
+
+    private HttpMediaDrmCallback createMediaDrmCallback(String licenseUrl, String[] keyRequestPropertiesArray) {
+        HttpDataSource.Factory licenseDataSourceFactory = ((ExoApplication) getApplication()).buildHttpDataSourceFactory();
+        HttpMediaDrmCallback drmCallback = new HttpMediaDrmCallback(licenseUrl, licenseDataSourceFactory);
+        if (keyRequestPropertiesArray != null) {
+            for (int i = 0; i < keyRequestPropertiesArray.length - 1; i += 2) {
+                drmCallback.setKeyRequestProperty(keyRequestPropertiesArray[i],
+                        keyRequestPropertiesArray[i + 1]);
+            }
+        }
+        return drmCallback;
+    }
+
+    private void releasePlayer() {
+        if (player != null) {
+            playWhenReady = player.getPlayWhenReady();
+            playbackPosition = player.getCurrentPosition();
+            currentWindow = player.getCurrentWindowIndex();
+            player.removeListener(playbackStateListener);
+            player.release();
+            player = null;
+        }
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        if (Util.SDK_INT >= 24) {
+            initializePlayer();
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        hideSystemUi();
+        if ((Util.SDK_INT < 24 || player == null)) {
+            initializePlayer();
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (Util.SDK_INT < 24) {
+            releasePlayer();
+        }
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        if (Util.SDK_INT >= 24) {
+            releasePlayer();
+        }
+    }
+
+    @SuppressLint("InlinedApi")
+    private void hideSystemUi() {
+        playerView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LOW_PROFILE
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+    }
+
+    private class PlaybackStateListener implements Player.EventListener {
+        @Override
+        public void onPlayerStateChanged(boolean playWhenReady, int playbackState) {
+            String stateString;
+            switch (playbackState) {
+                case ExoPlayer.STATE_IDLE:
+                    stateString = "ExoPlayer.STATE_IDLE      -";
+                    //Toast.makeText(VideoPlayerActivity.this, "ideal", Toast.LENGTH_SHORT).show();
+                    break;
+                case ExoPlayer.STATE_BUFFERING:
+                    stateString = "ExoPlayer.STATE_BUFFERING -";
+                    break;
+                case ExoPlayer.STATE_READY:
+                    stateString = "ExoPlayer.STATE_READY     -";
+                    break;
+                case ExoPlayer.STATE_ENDED:
+                    stateString = "ExoPlayer.STATE_ENDED     -";
+                    break;
+                default:
+                    stateString = "UNKNOWN_STATE             -";
+                    break;
+            }
+            Log.d(TAG, "changed state to " + stateString + " playWhenReady: " + playWhenReady);
+
+            final AdView playPauseAdView = (AdView) findViewById(R.id.pausePlayAd);
+            final AdRequest playPauseAdRequest = new AdRequest.Builder().build();
+            playPauseAdView.loadAd(playPauseAdRequest);
+            if (playWhenReady){
+                playPauseAdView.destroy();
+                playPauseAdView.setVisibility(View.GONE);
+                pausePlayView.setVisibility(View.INVISIBLE);
+            }else {
+                playPauseAdView.loadAd(playPauseAdRequest);
+                playPauseAdView.setVisibility(View.VISIBLE);
+                pausePlayView.setVisibility(View.VISIBLE);
+            }
+        }
+    }
+
+    @OnClick({R.id.exoFullscreenIcon, R.id.video_option, R.id.video_back})
+    public void onClick(View view) {
+        switch (view.getId()) {
+            case R.id.exoFullscreenIcon:
+                if (fullscreen) {
+                    fullScreen.setImageDrawable(ContextCompat.getDrawable(VideoPlayerActivity.this, R.drawable.ic_fullscreen_open));
+                    getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                            |View.SYSTEM_UI_FLAG_IMMERSIVE
+                            |View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+                    if(getSupportActionBar() != null){
+                        getSupportActionBar().hide();
+                    }
+                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+                    RelativeLayout.LayoutParams params = (RelativeLayout.LayoutParams) playerView.getLayoutParams();
+                    params.width = params.MATCH_PARENT;
+                    params.height = params.MATCH_PARENT;
+                    playerView.setLayoutParams(params);
+                    fullscreen = false;
+                } else {
+                    fullScreen.setImageDrawable(ContextCompat.getDrawable(VideoPlayerActivity.this, R.drawable.ic_fullscreen_close));
+                    getWindow().getDecorView().setSystemUiVisibility(
+                            View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    |View.SYSTEM_UI_FLAG_IMMERSIVE
+                                    |View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+                    if(getSupportActionBar() != null){
+                        getSupportActionBar().hide();
+                    }
+                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                    RelativeLayout.LayoutParams params = (RelativeLayout.LayoutParams) playerView.getLayoutParams();
+                    params.width = params.MATCH_PARENT;
+                    params.height = params.MATCH_PARENT;
+                    playerView.setLayoutParams(params);
+                    fullscreen = true;
+                }
+                break;
+
+            case R.id.video_back:
+                Toast.makeText(this, "video back triggered", Toast.LENGTH_SHORT).show();
+                onBackPressed();
+                break;
+
+            case R.id.video_option:
+                Toast.makeText(this, "video option triggered", Toast.LENGTH_SHORT).show();
+                break;
+
+            default:
+                break;
+        }
+    }
+
+
+}
