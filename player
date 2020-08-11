@@ -14,10 +14,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.media.AudioManager;
-import android.media.MediaDrm;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 import android.view.GestureDetector;
@@ -32,38 +33,30 @@ import android.widget.Toast;
 
 import com.akexorcist.roundcornerprogressbar.IconRoundCornerProgressBar;
 import com.example.jlplayer.R;
+import com.google.android.exoplayer2.BuildConfig;
 import com.google.android.exoplayer2.C;
+import com.google.android.exoplayer2.DefaultRenderersFactory;
 import com.google.android.exoplayer2.ExoPlayer;
-import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.ExoPlayerFactory;
+import com.google.android.exoplayer2.PlaybackPreparer;
 import com.google.android.exoplayer2.Player;
-import com.google.android.exoplayer2.RenderersFactory;
 import com.google.android.exoplayer2.SimpleExoPlayer;
-import com.google.android.exoplayer2.audio.AudioAttributes;
-import com.google.android.exoplayer2.drm.DefaultDrmSessionManager;
 import com.google.android.exoplayer2.drm.DrmSessionManager;
-import com.google.android.exoplayer2.drm.ExoMediaCrypto;
-import com.google.android.exoplayer2.drm.FrameworkMediaDrm;
-import com.google.android.exoplayer2.drm.HttpMediaDrmCallback;
-import com.google.android.exoplayer2.drm.MediaDrmCallback;
-import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
-import com.google.android.exoplayer2.offline.DownloadHelper;
-import com.google.android.exoplayer2.offline.DownloadRequest;
+import com.google.android.exoplayer2.drm.FrameworkMediaCrypto;
 import com.google.android.exoplayer2.source.ConcatenatingMediaSource;
 import com.google.android.exoplayer2.source.MediaSource;
-import com.google.android.exoplayer2.source.MergingMediaSource;
+import com.google.android.exoplayer2.source.MediaSourceEventListener;
 import com.google.android.exoplayer2.source.ProgressiveMediaSource;
-import com.google.android.exoplayer2.source.SingleSampleMediaSource;
-import com.google.android.exoplayer2.source.dash.DashMediaSource;
-import com.google.android.exoplayer2.source.hls.HlsMediaSource;
-import com.google.android.exoplayer2.source.smoothstreaming.SsMediaSource;
 import com.google.android.exoplayer2.trackselection.AdaptiveTrackSelection;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
-import com.google.android.exoplayer2.trackselection.RandomTrackSelection;
 import com.google.android.exoplayer2.trackselection.TrackSelection;
 import com.google.android.exoplayer2.ui.PlayerView;
 import com.google.android.exoplayer2.upstream.DataSource;
+import com.google.android.exoplayer2.upstream.DefaultBandwidthMeter;
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory;
+import com.google.android.exoplayer2.upstream.DefaultHttpDataSourceFactory;
 import com.google.android.exoplayer2.upstream.HttpDataSource;
+import com.google.android.exoplayer2.upstream.TransferListener;
 import com.google.android.exoplayer2.util.Util;
 import com.google.android.gms.ads.AdRequest;
 import com.google.android.gms.ads.AdView;
@@ -76,16 +69,7 @@ import org.apache.commons.io.FilenameUtils;
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 
-import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_DEFAULT;
-import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_EXTRA;
-import static ExoPlayer.PlayerActivity.ABR_ALGORITHM_RANDOM;
-import static ExoPlayer.PlayerActivity.ACTION_VIEW;
-import static ExoPlayer.PlayerActivity.ACTION_VIEW_LIST;
-import static ExoPlayer.PlayerActivity.PREFER_EXTENSION_DECODERS_EXTRA;
-import static ExoPlayer.PlayerActivity.TUNNELING_EXTRA;
-
-
-public class VideoPlayerActivity extends AppCompatActivity {
+public class VideoPlayerActivity extends AppCompatActivity implements PlaybackPreparer {
 
     @BindView(R.id.video_name) TextView VideoName;
     @BindView(R.id.playerView) PlayerView playerView;
@@ -126,16 +110,14 @@ public class VideoPlayerActivity extends AppCompatActivity {
     private long mSeek = 0;
     int mMaxVolume, mShowVolume, mShowLightness;
     //Minimum Video you want to buffer while Playing
-    public static final int MIN_BUFFER_DURATION = 10000;
-    public static final int MAX_BUFFER_DURATION = 20000;
-    public static final int MIN_PLAYBACK_START_BUFFER = 1000;
-    public static final int MIN_PLAYBACK_RESUME_BUFFER = 1000;
 
-    private MediaSource mediaSource;
-    private DefaultTrackSelector trackSelector;
-    private DefaultTrackSelector.Parameters trackSelectorParameters;
+    private static final DefaultBandwidthMeter BANDWIDTH_METER = new DefaultBandwidthMeter();
     private DataSource.Factory dataSourceFactory;
-    private static final String KEY_TRACK_SELECTOR_PARAMETERS = "track_selector_parameters";
+    private Handler mainHandler;
+    private MediaSourceEventListener eventLogger;
+    private DefaultTrackSelector trackSelector;
+    private DataSource.Factory mediaDataSourceFactory;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -148,13 +130,6 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
         });
 
-        DataSource.Factory dataSourceFactory = new DefaultDataSourceFactory(this, "exoplayer");
-        if (savedInstanceState != null) {
-            trackSelectorParameters = savedInstanceState.getParcelable(KEY_TRACK_SELECTOR_PARAMETERS);
-        } else {
-            DefaultTrackSelector.ParametersBuilder builder = new DefaultTrackSelector.ParametersBuilder(/* context= */ this);
-            trackSelectorParameters = builder.build();
-        }
 
         try {
             this.getSupportActionBar().hide();
@@ -204,136 +179,70 @@ public class VideoPlayerActivity extends AppCompatActivity {
     }
 
 
+    public boolean useExtensionRenderers() {
+        return BuildConfig.FLAVOR.equals("withExtensions");
+    }
     private void initializePlayer() {
         if (player == null) {
-            Intent intent = getIntent();
-            mediaSource = createTopLevelMediaSource(intent);
-            if (mediaSource == null) {
-                return;
-            }
 
-            TrackSelection.Factory trackSelectionFactory;
-            String abrAlgorithm = intent.getStringExtra(ABR_ALGORITHM_EXTRA);
-            if (abrAlgorithm == null || ABR_ALGORITHM_DEFAULT.equals(abrAlgorithm)) {
-                trackSelectionFactory = new AdaptiveTrackSelection.Factory();
-            } else if (ABR_ALGORITHM_RANDOM.equals(abrAlgorithm)) {
-                trackSelectionFactory = new RandomTrackSelection.Factory();
-            } else {
-                //showToast(R.string.error_unrecognized_abr_algorithm);
-                finish();
-                return;
-            }
+            mainHandler = new Handler();
+            eventLogger = new MediaSourceEventListener() { };
+            TrackSelection.Factory adaptiveTrackSelectionFactory = new AdaptiveTrackSelection.Factory(BANDWIDTH_METER);
+            trackSelector = new DefaultTrackSelector(adaptiveTrackSelectionFactory);
+            mediaDataSourceFactory = buildDataSourceFactory(true);
 
-            boolean preferExtensionDecoders = intent.getBooleanExtra(PREFER_EXTENSION_DECODERS_EXTRA, false);
-            RenderersFactory renderersFactory =  ((ExoApplication) getApplication()).buildRenderersFactory(preferExtensionDecoders);
-            trackSelector = new DefaultTrackSelector(/* context= */ this, trackSelectionFactory);
-            trackSelector.setParameters(trackSelectorParameters);
-            player = new SimpleExoPlayer.Builder(/* context= */ this, renderersFactory)
-                            .setTrackSelector(trackSelector)
-                            .build();
-            player.setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus= */ true);
+            DrmSessionManager<FrameworkMediaCrypto> drmSessionManager = null;
+            boolean preferExtensionDecoders = true;//intent.getBooleanExtra(PREFER_EXTENSION_DECODERS, false);
+            @DefaultRenderersFactory.ExtensionRendererMode int extensionRendererMode =
+                    (useExtensionRenderers()
+                            ? (preferExtensionDecoders ? DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                            : DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+                            : DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF);
+            DefaultRenderersFactory renderersFactory = new DefaultRenderersFactory(this, drmSessionManager, extensionRendererMode);
+            player = ExoPlayerFactory.newSimpleInstance(this, renderersFactory, trackSelector);
+            //player = new SimpleExoPlayer.Builder(context, renderersFactory).setTrackSelector(trackSelector).build();
+            player.addListener(new PlaybackStateListener());
+            player.setPlayWhenReady(true);
+
+            // Bind the player to the view.
             playerView.setPlayer(player);
-            player.prepare(mediaSource, false, false);
+            playerView.setPlaybackPreparer(this);
         }
+        String contentUrl = String.valueOf(videoUri);
+        MediaSource[] contentMediaSource = new MediaSource[1];
+        contentMediaSource[0] = buildMediaSource(Uri.parse(contentUrl), null, mainHandler, eventLogger);
+        MediaSource mediaSource = new ConcatenatingMediaSource(contentMediaSource);
+
+        // Prepare the player with the source.
+        //player.seekTo(contentPosition);
+        player.prepare(mediaSource, true, false);
     }
 
-    @Nullable
-    private MediaSource createTopLevelMediaSource(Intent intent) {
-        String action = intent.getAction();
-        boolean actionIsListView = ACTION_VIEW_LIST.equals(action);
-        if (!actionIsListView && !ACTION_VIEW.equals(action)) {
-            //showToast(getString(R.string.unexpected_intent_action, action));
-            finish();
-            return null;
-        }
-        ExoSample intentAsSample = ExoSample.createFromIntent(intent);
-        ExoSample.UriSample[] samples = intentAsSample instanceof ExoSample.PlaylistSample ? ((ExoSample.PlaylistSample) intentAsSample).children : new ExoSample.UriSample[] {(ExoSample.UriSample) intentAsSample};
-        boolean seenAdsTagUri = false;
-        for (ExoSample.UriSample sample : samples) {
-            seenAdsTagUri |= sample.adTagUri != null;
-            if (!Util.checkCleartextTrafficPermitted(sample.uri)) {
-                //showToast(R.string.error_cleartext_not_permitted);
-                return null;
-            }
-            if (Util.maybeRequestReadExternalStoragePermission(/* activity= */ this, sample.uri)) {
-                // The player will be reinitialized if the permission is granted.
-                return null;
-            }
-        }
-        MediaSource[] mediaSources = new MediaSource[samples.length];
-        for (int i = 0; i < samples.length; i++) {
-            mediaSources[i] = createLeafMediaSource(samples[i]);
-            ExoSample.SubtitleInfo subtitleInfo = samples[i].subtitleInfo;
-            if (subtitleInfo != null) {
-                if (Util.maybeRequestReadExternalStoragePermission(/* activity= */ this, subtitleInfo.uri)) {
-                    return null;
-                }
-                Format subtitleFormat = Format.createTextSampleFormat(/* id= */ null, subtitleInfo.mimeType, C.SELECTION_FLAG_DEFAULT, subtitleInfo.language);
-                MediaSource subtitleMediaSource = new SingleSampleMediaSource.Factory(dataSourceFactory).createMediaSource(subtitleInfo.uri, subtitleFormat, C.TIME_UNSET);
-                mediaSources[i] = new MergingMediaSource(mediaSources[i], subtitleMediaSource);
-            }
-        }
-        MediaSource mediaSource = mediaSources.length == 1 ? mediaSources[0] : new ConcatenatingMediaSource(mediaSources);
-        return mediaSource;
-    }
-
-    private MediaSource createLeafMediaSource(ExoSample.UriSample parameters) {
-        ExoSample.DrmInfo drmInfo = parameters.drmInfo;
-        int errorStringId = R.string.error_drm_unknown;
-        DrmSessionManager<ExoMediaCrypto> drmSessionManager = null;
-        if (drmInfo == null) {
-            drmSessionManager = DrmSessionManager.getDummyDrmSessionManager();
-        } else if (Util.SDK_INT < 18) {
-            //errorStringId = R.string.error_drm_unsupported_before_api_18;
-        } else if (!MediaDrm.isCryptoSchemeSupported(drmInfo.drmScheme)) {
-            //errorStringId = R.string.error_drm_unsupported_scheme;
-        } else {
-            MediaDrmCallback mediaDrmCallback = createMediaDrmCallback(drmInfo.drmLicenseUrl, drmInfo.drmKeyRequestProperties);
-            drmSessionManager = new DefaultDrmSessionManager.Builder()
-                    .setUuidAndExoMediaDrmProvider(drmInfo.drmScheme, FrameworkMediaDrm.DEFAULT_PROVIDER)
-                    .setMultiSession(drmInfo.drmMultiSession)
-                    .build(mediaDrmCallback);
-        }
-
-        if (drmSessionManager == null) {
-            //showToast(errorStringId);
-            finish();
-            return null;
-        }
-        DownloadRequest downloadRequest = ((ExoApplication) getApplication()).getDownloadTracker().getDownloadRequest(parameters.uri);
-        if (downloadRequest != null) {
-            return DownloadHelper.createMediaSource(downloadRequest, dataSourceFactory);
-        }
-        return createLeafMediaSource(parameters.uri, parameters.extension, drmSessionManager);
-    }
-    
-    private MediaSource createLeafMediaSource(Uri uri, String extension, DrmSessionManager<?> drmSessionManager) {
-        @C.ContentType int type = Util.inferContentType(uri, extension);
+    private MediaSource buildMediaSource(Uri uri, String overrideExtension, @Nullable Handler handler, @Nullable MediaSourceEventListener listener) {
+        @C.ContentType int type = TextUtils.isEmpty(overrideExtension) ? Util.inferContentType(uri) : Util.inferContentType("." + overrideExtension);
         switch (type) {
-            case C.TYPE_DASH:
-                return new DashMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
-            case C.TYPE_SS:
-                return new SsMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
-            case C.TYPE_HLS:
-                return new HlsMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
             case C.TYPE_OTHER:
-                return new ProgressiveMediaSource.Factory(dataSourceFactory).setDrmSessionManager(drmSessionManager).createMediaSource(uri);
-            default:
+                return new ProgressiveMediaSource.Factory(mediaDataSourceFactory).createMediaSource(uri);
+            default: {
                 throw new IllegalStateException("Unsupported type: " + type);
+            }
         }
     }
 
-    private HttpMediaDrmCallback createMediaDrmCallback(String licenseUrl, String[] keyRequestPropertiesArray) {
-        HttpDataSource.Factory licenseDataSourceFactory = ((ExoApplication) getApplication()).buildHttpDataSourceFactory();
-        HttpMediaDrmCallback drmCallback = new HttpMediaDrmCallback(licenseUrl, licenseDataSourceFactory);
-        if (keyRequestPropertiesArray != null) {
-            for (int i = 0; i < keyRequestPropertiesArray.length - 1; i += 2) {
-                drmCallback.setKeyRequestProperty(keyRequestPropertiesArray[i],
-                        keyRequestPropertiesArray[i + 1]);
-            }
-        }
-        return drmCallback;
+    private DataSource.Factory buildDataSourceFactory(boolean useBandwidthMeter) {
+        return buildDataSourceFactory(useBandwidthMeter ? BANDWIDTH_METER : null);
     }
+
+    /** Returns a {@link DataSource.Factory}. */
+    public DataSource.Factory buildDataSourceFactory(TransferListener listener) {
+        return new DefaultDataSourceFactory(this, listener, buildHttpDataSourceFactory(listener));
+    }
+
+    /** Returns a {@link HttpDataSource.Factory}. */
+    public HttpDataSource.Factory buildHttpDataSourceFactory(TransferListener listener) {
+        return new DefaultHttpDataSourceFactory(Util.getUserAgent(this, this.getString(R.string.app_name)), listener);
+    }
+
 
     private void releasePlayer() {
         if (player != null) {
@@ -389,6 +298,11 @@ public class VideoPlayerActivity extends AppCompatActivity {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
     }
 
+    @Override
+    public void preparePlayback() {
+        player.retry();
+    }
+
     private class PlaybackStateListener implements Player.EventListener {
         @Override
         public void onPlayerStateChanged(boolean playWhenReady, int playbackState) {
@@ -413,70 +327,9 @@ public class VideoPlayerActivity extends AppCompatActivity {
             }
             Log.d(TAG, "changed state to " + stateString + " playWhenReady: " + playWhenReady);
 
-            final AdView playPauseAdView = (AdView) findViewById(R.id.pausePlayAd);
-            final AdRequest playPauseAdRequest = new AdRequest.Builder().build();
-            playPauseAdView.loadAd(playPauseAdRequest);
-            if (playWhenReady){
-                playPauseAdView.destroy();
-                playPauseAdView.setVisibility(View.GONE);
-                pausePlayView.setVisibility(View.INVISIBLE);
-            }else {
-                playPauseAdView.loadAd(playPauseAdRequest);
-                playPauseAdView.setVisibility(View.VISIBLE);
-                pausePlayView.setVisibility(View.VISIBLE);
-            }
         }
     }
 
-    @OnClick({R.id.exoFullscreenIcon, R.id.video_option, R.id.video_back})
-    public void onClick(View view) {
-        switch (view.getId()) {
-            case R.id.exoFullscreenIcon:
-                if (fullscreen) {
-                    fullScreen.setImageDrawable(ContextCompat.getDrawable(VideoPlayerActivity.this, R.drawable.ic_fullscreen_open));
-                    getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
-                            |View.SYSTEM_UI_FLAG_IMMERSIVE
-                            |View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
-                    if(getSupportActionBar() != null){
-                        getSupportActionBar().hide();
-                    }
-                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-                    RelativeLayout.LayoutParams params = (RelativeLayout.LayoutParams) playerView.getLayoutParams();
-                    params.width = params.MATCH_PARENT;
-                    params.height = params.MATCH_PARENT;
-                    playerView.setLayoutParams(params);
-                    fullscreen = false;
-                } else {
-                    fullScreen.setImageDrawable(ContextCompat.getDrawable(VideoPlayerActivity.this, R.drawable.ic_fullscreen_close));
-                    getWindow().getDecorView().setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_FULLSCREEN
-                                    |View.SYSTEM_UI_FLAG_IMMERSIVE
-                                    |View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
-                    if(getSupportActionBar() != null){
-                        getSupportActionBar().hide();
-                    }
-                    setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-                    RelativeLayout.LayoutParams params = (RelativeLayout.LayoutParams) playerView.getLayoutParams();
-                    params.width = params.MATCH_PARENT;
-                    params.height = params.MATCH_PARENT;
-                    playerView.setLayoutParams(params);
-                    fullscreen = true;
-                }
-                break;
-
-            case R.id.video_back:
-                Toast.makeText(this, "video back triggered", Toast.LENGTH_SHORT).show();
-                onBackPressed();
-                break;
-
-            case R.id.video_option:
-                Toast.makeText(this, "video option triggered", Toast.LENGTH_SHORT).show();
-                break;
-
-            default:
-                break;
-        }
-    }
 
 
 }
